@@ -1,0 +1,233 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{tabularx}
+\usepackage{booktabs}
+
+% Configuration pour les listes
+\setlist[itemize]{leftmargin=*, itemsep=2pt, topsep=5pt}
+\setlist[enumerate]{leftmargin=*, itemsep=2pt, topsep=5pt}
+
+% Configuration pour les sections
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\small\bfseries}{\thesubsubsection}{1em}{}
+
+\begin{document}
+
+\begin{center}
+    {\LARGE \textbf{Rapport Technique}} \\
+    {\large Tableau Kanban Next.js/Redis \\}
+    {\small \textit{Application haute performance avec synchronisation en temps réel}}
+\end{center}
+
+\vspace{1cm}
+
+\section*{Résumé Exécutif}
+
+Ce document présente une analyse technique détaillée du projet \textbf{Next.js/Redis Kanban Board}, une application web interactive de gestion de tâches exploitant une architecture moderne basée sur Next.js 16 et Redis comme base de données primaire. Le projet illustre l'utilisation efficace de Redis comme magasin d'état principal, capitalisant sur sa rapidité pour offrir une expérience utilisateur réactive.
+
+\section{Architecture Technique}
+
+\subsection{Stack Technologique}
+
+\subsubsection{Frontend}
+\begin{itemize}
+    \item \textbf{Next.js 16} avec App Router pour le rendu côté serveur
+    \item \textbf{TypeScript} pour la sécurité des types
+    \item \textbf{Tailwind CSS} pour le stylisme utilitaire
+    \item \textbf{Radix UI} (via shadcn/ui) pour les composants accessibles
+    \item Gestion d'état avec \texttt{useState}/\texttt{useEffect} de React
+\end{itemize}
+
+\subsubsection{Backend}
+\begin{itemize}
+    \item \textbf{Redis} comme base de données en mémoire
+    \item \textbf{ioredis} comme client Redis
+    \item \textbf{API Routes} de Next.js pour les endpoints backend
+\end{itemize}
+
+\subsection{Structure du Projet}
+
+\begin{verbatim}
+app/
+├── api/                 # Route Handlers Next.js
+│   ├── columns/        # API pour les colonnes
+│   └── tasks/          # API pour les tâches
+├── page.tsx            # Page principale
+└── layout.tsx          # Layout racine
+components/
+├── kanban-board.tsx    # Logique du tableau (Drag \& Drop)
+├── kanban-column.tsx   # UI des colonnes
+└── ...                 # Autres composants
+lib/
+└── redis.ts            # Configuration du client Redis
+types/                  # Définitions TypeScript
+\end{verbatim}
+
+\subsection{Modélisation des Données Redis}
+
+L'application utilise deux structures de données principales dans Redis :
+
+\subsubsection{Colonnes}
+\begin{itemize}
+    \item \textbf{Structure} : Hash Redis \texttt{kanban:columns}
+    \item \textbf{Clé} : ID de la colonne (ex: \texttt{col1, col2, col3})
+    \item \textbf{Valeur} : Objet JSON sérialisé contenant :
+    \begin{itemize}
+        \item \texttt{id} : Identifiant unique
+        \item \texttt{title} : Titre de la colonne
+        \item \texttt{taskIds} : Tableau des IDs de tâches
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Tâches}
+\begin{itemize}
+    \item \textbf{Structure} : Hash Redis \texttt{kanban:tasks}
+    \item \textbf{Clé} : ID de la tâche (ex: \texttt{task1, task2})
+    \item \textbf{Valeur} : Objet JSON sérialisé contenant :
+    \begin{itemize}
+        \item \texttt{id} : Identifiant unique
+        \item \texttt{content} : Contenu de la tâche
+        \item \texttt{columnId} : Référence à la colonne parente
+    \end{itemize}
+\end{itemize}
+
+Cette modélisation permet des opérations en O(1) pour la récupération et la mise à jour des données, garantissant des performances optimales.
+
+\section{Mécanisme de Synchronisation en Temps Réel}
+
+\subsection{Stratégie Actuelle : Polling}
+
+\subsubsection{Implémentation}
+Le client (\texttt{KanbanBoard}) récupère automatiquement les données les plus récentes de l'API toutes les \textbf{2 secondes} :
+
+\begin{verbatim}
+useEffect(() => {
+    const interval = setInterval(() => {
+        fetchColumns();
+        fetchTasks();
+    }, 2000);
+    return () => clearInterval(interval);
+}, []);
+\end{verbatim}
+
+\subsubsection{Avantages}
+\begin{itemize}
+    \item \textbf{Simplicité} : Aucune infrastructure complexe requise
+    \item \textbf{Robustesse} : Tolérant aux déconnexions réseau
+    \item \textbf{Serverless} : Compatible avec les environnements sans serveur
+    \item \textbf{Performance} : Redis répond en <1ms, rendant le polling fréquent viable
+\end{itemize}
+
+\subsubsection{Flux de Données}
+\begin{enumerate}
+    \item Client envoie une requête GET vers \texttt{/api/columns}
+    \item Handler Next.js interroge Redis via \texttt{ioredis}
+    \item Redis retourne les données en mémoire
+    \item Les données sont sérialisées en JSON et renvoyées au client
+    \item Mise à jour de l'interface utilisateur avec les nouvelles données
+\end{enumerate}
+
+\subsection{Architecture pour les Futures Améliorations}
+
+\subsubsection{Pub/Sub Redis}
+Pour une vraie synchronisation en temps réel :
+\begin{verbatim}
+// Serveur publie un événement
+redis.publish('kanban:updates', JSON.stringify({
+    event: 'task:moved',
+    data: { taskId, fromColumnId, toColumnId }
+}));
+
+// Clients souscrits reçoivent les mises à jour
+redis.subscribe('kanban:updates', (message) => {
+    // Mettre à jour l'UI en temps réel
+});
+\end{verbatim}
+
+\subsubsection{WebSockets}
+\begin{itemize}
+    \item Serveur WebSocket séparé ou service comme Pusher/Ably
+    \item Abonnement aux canaux Redis Pub/Sub
+    \item Diffusion des mises à jour aux clients connectés
+\end{itemize}
+
+\section{Performance et Évolutivité}
+
+\subsection{Métriques Clés}
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{\textwidth}{lX}
+\toprule
+\textbf{Métrique} & \textbf{Valeur} \\
+\midrule
+Temps de réponse Redis & < 1 ms \\
+Fréquence de synchronisation & 2000 ms \\
+Taille maximale des données & Mémoire Redis disponible \\
+Concurrence & Supportée via transactions Redis \\
+\bottomrule
+\end{tabularx}
+\caption{Métriques de performance}
+\end{table}
+
+\subsection{Avantages de l'Architecture}
+
+\begin{enumerate}
+    \item \textbf{Vitesse} : Redis en mémoire offre des lectures/écritures ultra-rapides
+    \item \textbf{Simplicité} : Architecture monolithique avec séparation claire des responsabilités
+    \item \textbf{Maintenabilité} : Code TypeScript avec types stricts
+    \item \textbf{Portabilité} : Fonctionne sur tout environnement supportant Node.js et Redis
+\end{enumerate}
+
+\subsection{Limitations Actuelles}
+
+\begin{itemize}
+    \item \textbf{Persistance} : Données perdues en cas de redémarrage de Redis (sans RDB/AOF)
+    \item \textbf{Évolutivité horizontale} : Redis monolithique (non clusterisé)
+    \item \textbf{Sécurité} : Absence d'authentification/autorisation
+    \item \textbf{Consommation mémoire} : Toutes les données résident en mémoire
+\end{itemize}
+
+\section{Roadmap d'Amélioration}
+
+\subsection{Court Terme (1-3 mois)}
+\begin{itemize}
+    \item Implémenter la persistance Redis avec RDB et AOF
+    \item Ajouter l'authentification utilisateur via NextAuth.js
+    \item Intégrer \texttt{dnd-kit} pour un drag-and-drop plus accessible
+\end{itemize}
+
+\subsection{Moyen Terme (3-6 mois)}
+\begin{itemize}
+    \item Migrer vers Redis Cluster pour l'évolutivité horizontale
+    \item Implémenter Redis Pub/Sub pour les mises à jour en temps réel
+    \item Ajouter des WebSockets pour une synchronisation bidirectionnelle
+\end{itemize}
+
+\subsection{Long Terme (6+ mois)}
+\begin{itemize}
+    \item Introduire une base de données relationnelle (PostgreSQL) pour la persistance à long terme
+    \item Implémenter un cache multi-niveaux (Redis + CDN)
+    \item Développer une application mobile React Native
+\end{itemize}
+
+\section{Conclusion}
+
+Le projet \textbf{Next.js/Redis Kanban Board} démontre avec succès comment combiner les technologies modernes du web (Next.js, React, TypeScript) avec une base de données en mémoire performante (Redis) pour créer une application interactive et réactive.
+
+L'architecture actuelle, bien que simple, fournit une base solide pour l'évolution vers une solution de production complète. La stratégie de polling, bien que n'étant pas du vrai temps réel, offre un compromis excellent entre simplicité, performance et maintenabilité.
+
+Les améliorations futures, notamment l'intégration de Redis Pub/Sub et des WebSockets, positionneront l'application comme une solution compétitive dans le domaine des outils de collaboration en temps réel.
+
+\end{document}
